@@ -4,9 +4,18 @@ import requests
 import base64
 import json
 import numpy as np
+import serial
+import time
 
 # Define the URL for the img2img API
 webui_server_url = 'http://127.0.0.1:7860'
+
+# Konfigurieren Sie den COM-Port und die Baudrate
+COM_PORT = 'COM15'  # Ändern Sie dies auf den richtigen COM-Port
+BAUD_RATE = 9600
+
+# Serielle Verbindung einrichten
+ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=1)
 
 def encode_file_to_base64(path):
     print(f"Kodieren der Datei {path} in Base64...")
@@ -73,33 +82,39 @@ def capture_image():
         print("Konnte die Webcam nicht öffnen.")
         return
 
-    print("Drücken Sie die Eingabetaste, um ein Bild zu speichern...")
+    # Frame von der Webcam lesen
+    ret, frame = cap.read()
+    if not ret:
+        print("Konnte das Frame nicht lesen.")
+        return
 
-    while True:
-        # Frame von der Webcam lesen
-        ret, frame = cap.read()
-        if not ret:
-            print("Konnte das Frame nicht lesen.")
-            break
+    # Frame anzeigen
+    cv2.imshow('Webcam', frame)
 
-        # Frame anzeigen
-        cv2.imshow('Webcam', frame)
-
-        # Überprüfen, ob die Eingabetaste gedrückt wurde
-        if keyboard.is_pressed('enter'):
-            # Bild speichern
-            image_path = 'captured_image.png'
-            cv2.imwrite(image_path, frame)
-            print("Bild gespeichert als 'captured_image.png'")
-            cap.release()
-            cv2.destroyAllWindows()
-            send_image(image_path)  # Bild an die API senden
-            break
+    # Überprüfen, ob die Eingabetaste gedrückt wurde
+    # Bild speichern
+    image_path = 'captured_image.png'
+    cv2.imwrite(image_path, frame)
+    print("Bild gespeichert als 'captured_image.png'")
+    cap.release()
+    cv2.destroyAllWindows()
+    send_image(image_path)  # Bild an die API senden
 
     # Ressourcen freigeben
     cap.release()
     cv2.destroyAllWindows()
     print("Webcam geschlossen und Ressourcen freigegeben.")
 
+def main():
+    print("Warten auf serielle Eingabe...")
+    while True:
+        if ser.in_waiting > 0:  # Überprüfen, ob Daten verfügbar sind
+            value = str(ser.readline().rstrip()).replace("'","").replace("b","",1) # Wert lesen
+            print(value)
+            if(value=="btn"):
+                print(f"Wert empfangen: {value}")
+                capture_image()  # Bild aufnehmen, wenn ein Wert empfangen wird
+                time.sleep(1)  # Kurze Pause, um Mehrfachaufnahmen zu vermeiden
+
 if __name__ == "__main__":
-    capture_image()
+    main()
