@@ -195,6 +195,6 @@ class ImageTextLoop:
             self.sound_button.config(state=tk.DISABLED)
 
 if __name__ == "__main__":
-    API_KEY = "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"
+    API_KEY = ""
     app = ImageTextLoop(API_KEY)
     app.root.mainloop()
