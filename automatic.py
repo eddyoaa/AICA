@@ -74,6 +74,7 @@ def send_image(image_path):
             for idx, image_data in enumerate(r["images"]):
                 print(f"Zeige Bild {idx + 1} an...")
                 display_image(image_data)  # Zeige jedes Bild an
+        # blend_images(r["images"][1], r["images"][2], value)
     else:
         print(f"Fehler beim Senden des Bildes: {response.status_code} - {response.text}")
 
@@ -108,6 +109,16 @@ def capture_image():
     print("Webcam geschlossen und Ressourcen freigegeben.")
     return image_path
 
+def blend_images(img1,img2 ,value):
+    # Clamp value between 1 and 20
+    value = max(1, min(value, 20))
+    # Calculate interpolation weight
+    alpha = (value - 1) / 19.0
+    # Blend images
+    blended = cv2.addWeighted(img1, alpha, img2, 1 - alpha, 0)
+    # Display result
+    cv2.imshow('Interpolated Image', blended)
+    
 def main():
     print("Warten auf serielle Eingabe...")
     while True:
