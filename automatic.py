@@ -56,6 +56,9 @@ def send_image(image_path):
         "width": 256,
         "height": 256,
         "batch_size": 1,
+        "override_settings": {"sd_model_checkpoint": "v2-1_768-ema-pruned"},
+        "script_name":"Loopback",
+        "script_args":[2,0.5,"Linear","None"]
     }
 
     print("Sende Payload an die API...")
@@ -65,12 +68,12 @@ def send_image(image_path):
         print("Bild erfolgreich gesendet!")
         r = response.json()
         print("Antwort von der API erhalten:")
-        print(json.dumps(r, indent=4))  # Schöner formatierte Ausgabe der Antwort
         
-        # Bild anzeigen
+        # Alle Bilder anzeigen
         if "images" in r and len(r["images"]) > 0:
-            print("Bilddaten:", r["images"][0])  # Debug-Ausgabe der Bilddaten
-            display_image(r["images"][0])  # Zeige das erste Bild an
+            for idx, image_data in enumerate(r["images"]):
+                print(f"Zeige Bild {idx + 1} an...")
+                display_image(image_data)  # Zeige jedes Bild an
     else:
         print(f"Fehler beim Senden des Bildes: {response.status_code} - {response.text}")
 
@@ -98,12 +101,12 @@ def capture_image():
     print("Bild gespeichert als 'captured_image.png'")
     cap.release()
     cv2.destroyAllWindows()
-    send_image(image_path)  # Bild an die API senden
 
     # Ressourcen freigeben
     cap.release()
     cv2.destroyAllWindows()
     print("Webcam geschlossen und Ressourcen freigegeben.")
+    return image_path
 
 def main():
     print("Warten auf serielle Eingabe...")
@@ -113,8 +116,11 @@ def main():
             print(value)
             if(value=="btn"):
                 print(f"Wert empfangen: {value}")
-                capture_image()  # Bild aufnehmen, wenn ein Wert empfangen wird
+                imagePath = capture_image()  # Bild aufnehmen, wenn ein Wert empfangen wird
+                send_image(imagePath)
                 time.sleep(1)  # Kurze Pause, um Mehrfachaufnahmen zu vermeiden
+                
+                continue
 
 if __name__ == "__main__":
     main()
