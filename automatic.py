@@ -1,137 +1,155 @@
 import cv2
-import keyboard
 import requests
 import base64
-import json
 import numpy as np
 import serial
 import time
+import threading
 
-# Define the URL for the img2img API
-webui_server_url = 'http://127.0.0.1:7860'
-
-# Konfigurieren Sie den COM-Port und die Baudrate
-COM_PORT = 'COM15'  # Ändern Sie dies auf den richtigen COM-Port
+# Configuration
+WEBUI_SERVER_URL = 'http://127.0.0.1:7860'
+COM_PORT = '/dev/tty.usbserial-2110'
 BAUD_RATE = 9600
+WINDOW_NAME = "Display"
+DEFAULT_DIMENSION = 512  # Default square dimension for the webcam and images
+WINDOW_WIDTH = DEFAULT_DIMENSION * 2
+WINDOW_HEIGHT = DEFAULT_DIMENSION
 
-# Serielle Verbindung einrichten
+# Set up serial connection
 ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=1)
 
-def encode_file_to_base64(path):
-    print(f"Kodieren der Datei {path} in Base64...")
-    with open(path, 'rb') as file:
+def encode_file_to_base64(file_path):
+    """Encodes a file to Base64 format."""
+    with open(file_path, 'rb') as file:
         return base64.b64encode(file.read()).decode('utf-8')
 
-def display_image(image_data):
-    # Dekodieren des Base64-Bildes
+def decode_base64_to_image(base64_data):
+    """Decodes a Base64 string to a NumPy image array."""
     try:
-        image_bytes = base64.b64decode(image_data)
-        # Konvertieren der Bytes in ein NumPy-Array
+        image_bytes = base64.b64decode(base64_data)
         np_array = np.frombuffer(image_bytes, np.uint8)
-        # Konvertieren des NumPy-Arrays in ein Bild
-        image = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
-
-        if image is None:
-            print("Fehler beim Dekodieren des Bildes. Das Bild könnte leer oder ungültig sein.")
-            return
-
-        # Bild anzeigen
-        cv2.imshow('Generated Image', image)
-        while True:
-            if cv2.waitKey(1) & 0xFF == ord('q'):  # Wenn 'q' gedrückt wird, schließen
-                break
-        cv2.destroyAllWindows()
+        return cv2.imdecode(np_array, cv2.IMREAD_COLOR)
     except Exception as e:
-        print(f"Fehler beim Anzeigen des Bildes: {e}")
+        print(f"Error decoding image: {e}")
+        return None
 
-def send_image(image_path):
-    print(f"Bild wird gesendet: {image_path}")
+def send_image_to_api(image_path, images_placeholder):
+    """Sends an image to the API and updates the placeholder with response images."""
     encoded_image = encode_file_to_base64(image_path)
-
     payload = {
-        "prompt": "1girl, blue hair",  # Beispiel-Prompt
-        "init_images": [encoded_image],  # Das kodierte Bild zur Payload hinzufügen
-        "denoising_strength": 0.5,
+        "prompt": "",
+        "init_images": [encoded_image],
+        "denoising_strength": 0.2,
         "n_iter": 1,
-        "width": 256,
-        "height": 256,
+        "width": DEFAULT_DIMENSION,
+        "height": DEFAULT_DIMENSION,
         "batch_size": 1,
         "override_settings": {"sd_model_checkpoint": "v2-1_768-ema-pruned"},
-        "script_name":"Loopback",
-        "script_args":[2,0.5,"Linear","None"]
+        "script_name": "Loopback",
+        "script_args": [10, 0.2, "Linear", "None"]
     }
-
-    print("Sende Payload an die API...")
-    response = requests.post(f'{webui_server_url}/sdapi/v1/img2img', json=payload)
-    
+    response = requests.post(f'{WEBUI_SERVER_URL}/sdapi/v1/img2img', json=payload)
     if response.status_code == 200:
-        print("Bild erfolgreich gesendet!")
-        r = response.json()
-        print("Antwort von der API erhalten:")
-        
-        # Alle Bilder anzeigen
-        if "images" in r and len(r["images"]) > 0:
-            for idx, image_data in enumerate(r["images"]):
-                print(f"Zeige Bild {idx + 1} an...")
-                display_image(image_data)  # Zeige jedes Bild an
-        # blend_images(r["images"][1], r["images"][2], value)
+        images = response.json().get("images", [])
+        # pop first image (Loop overview)
+        images.pop(0)
+        images_placeholder[:] = [decode_base64_to_image(img) for img in images if decode_base64_to_image(img) is not None]
     else:
-        print(f"Fehler beim Senden des Bildes: {response.status_code} - {response.text}")
+        print(f"Error from API: {response.status_code} - {response.text}")
 
-def capture_image():
-    print("Öffne Webcam...")
-    cap = cv2.VideoCapture(0)
+def crop_to_square(image):
+    """Crops an image to a square from the center."""
+    h, w = image.shape[:2]
+    min_dim = min(h, w)
+    x_center = w // 2
+    y_center = h // 2
+    half_dim = min_dim // 2
+    return image[y_center - half_dim:y_center + half_dim, x_center - half_dim:x_center + half_dim]
 
-    if not cap.isOpened():
-        print("Konnte die Webcam nicht öffnen.")
-        return
-
-    # Frame von der Webcam lesen
+def capture_webcam_image(cap, dimension):
+    """Captures a square-cropped image from the webcam and saves it to a file."""
     ret, frame = cap.read()
     if not ret:
-        print("Konnte das Frame nicht lesen.")
-        return
+        print("Failed to capture frame.")
+        return None
 
-    # Frame anzeigen
-    cv2.imshow('Webcam', frame)
+    # Crop the frame to a square
+    cropped_frame = crop_to_square(frame)
 
-    # Überprüfen, ob die Eingabetaste gedrückt wurde
-    # Bild speichern
+    # Resize to the required dimension if needed
+    cropped_square = cv2.resize(cropped_frame, (dimension, dimension))
+
     image_path = 'captured_image.png'
-    cv2.imwrite(image_path, frame)
-    print("Bild gespeichert als 'captured_image.png'")
-    cap.release()
-    cv2.destroyAllWindows()
-
-    # Ressourcen freigeben
-    cap.release()
-    cv2.destroyAllWindows()
-    print("Webcam geschlossen und Ressourcen freigegeben.")
+    cv2.imwrite(image_path, cropped_square)
     return image_path
 
-def blend_images(img1,img2 ,value):
-    # Clamp value between 1 and 20
-    value = max(1, min(value, 20))
-    # Calculate interpolation weight
-    alpha = (value - 1) / 19.0
-    # Blend images
-    blended = cv2.addWeighted(img1, alpha, img2, 1 - alpha, 0)
-    # Display result
-    cv2.imshow('Interpolated Image', blended)
-    
-def main():
-    print("Warten auf serielle Eingabe...")
+def create_split_screen(webcam_frame, generated_image, width, height):
+    """Creates a split-screen view with webcam on the left and generated image on the right."""
+    side_width = width // 2
+
+    # Resize webcam image to fit in the left pane
+    webcam_resized = cv2.resize(webcam_frame, (side_width, height))
+
+    # Directly resize generated image for the right pane
+    generated_resized = cv2.resize(generated_image, (side_width, height))
+
+    # Concatenate the images
+    split_screen = cv2.hconcat([webcam_resized, generated_resized])
+    return split_screen
+
+def main_loop():
+    """Main loop to handle serial input, display webcam feed, and process images."""
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Could not open webcam.")
+        return
+
+    generated_images = [np.zeros((DEFAULT_DIMENSION, DEFAULT_DIMENSION, 3), dtype=np.uint8)]  # Placeholder for generated images
+    current_image_index = 0
+    print("Waiting for serial input...")
+
     while True:
-        if ser.in_waiting > 0:  # Überprüfen, ob Daten verfügbar sind
-            value = str(ser.readline().rstrip()).replace("'","").replace("b","",1) # Wert lesen
-            print(value)
-            if(value=="btn"):
-                print(f"Wert empfangen: {value}")
-                imagePath = capture_image()  # Bild aufnehmen, wenn ein Wert empfangen wird
-                send_image(imagePath)
-                time.sleep(1)  # Kurze Pause, um Mehrfachaufnahmen zu vermeiden
-                
-                continue
+        # try to read webcam frame
+        ret, webcam_frame = cap.read()
+        if not ret:
+            print("Failed to read frame from webcam.")
+            break
+        # crop webcam frame to square
+        square_crop = crop_to_square(webcam_frame)
+        square_crop_resized = cv2.resize(square_crop, (DEFAULT_DIMENSION, DEFAULT_DIMENSION))
+        
+        # place webcam frame and generated_image into splitscreen and display
+        split_screen = create_split_screen(square_crop_resized, generated_images[current_image_index], WINDOW_WIDTH, WINDOW_HEIGHT)
+        cv2.imshow(WINDOW_NAME, split_screen)
+
+        # Check for Input from ESP32
+        if ser.in_waiting > 0:
+            value = ser.readline().decode('utf-8').strip()
+            print(f"Received value: {value}")
+            # Button Press -> trigger image capture
+            if value == "btn":
+                # Capture and process square-cropped image
+                image_path = capture_webcam_image(cap, DEFAULT_DIMENSION)
+                if image_path:
+                    # Run API call in a separate thread
+                    threading.Thread(target=send_image_to_api, args=(image_path, generated_images)).start()
+                    current_image_index = 0  # Reset to the first image
+
+                time.sleep(1)  # Avoid multiple triggers in a short time
+            # rotary input -> iterate through generated images
+            if value.isdigit():
+                # Parse the input number and use it as an index
+                index = int(value)
+                if generated_images:
+                    current_image_index = index % len(generated_images)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("Exiting...")
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main()
+    main_loop()
