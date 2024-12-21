@@ -4,6 +4,7 @@ import base64
 import numpy as np
 import serial
 import threading
+from pynput import keyboard
 
 # Configuration
 WEBUI_SERVER_URL = 'http://127.0.0.1:7860'
@@ -14,8 +15,15 @@ DEFAULT_DIMENSION = 512  # Default square dimension for the webcam and images
 WINDOW_WIDTH = DEFAULT_DIMENSION * 2
 WINDOW_HEIGHT = DEFAULT_DIMENSION
 
-# Set up serial connection
-ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=1)
+# Try to set up serial connection
+try:
+    ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=1)
+    serial_available = True
+    print("Serial connection established")
+except serial.SerialException:
+    ser = None
+    serial_available = False
+    print("No serial connection available - continuing in keyboard-only mode")
 
 def encode_file_to_base64(file_path):
     """Encodes a file to Base64 format."""
@@ -86,7 +94,9 @@ def blend_images(image1, image2, blend_factor):
     return cv2.addWeighted(image1, 1 - blend_factor, image2, blend_factor, 0)
 
 def main_loop():
-    """Main loop to handle serial input and process images."""
+    """Main loop to handle serial/keyboard input and process images."""
+    global serial_available, ser
+    
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -96,7 +106,42 @@ def main_loop():
     generated_images = []  # List to hold generated and captured images
     current_image_index = 0
     blend_factor = 0
+    debug_mode = False
+    total_steps = 0
     print("Waiting for serial input...")
+
+    def on_press(key):
+        nonlocal debug_mode, total_steps
+        try:
+            if hasattr(key, 'char') and key.char == 'D':  # Großes D bedeutet Shift+d
+                debug_mode = not debug_mode
+                print(f"Debug mode: {'ON' if debug_mode else 'OFF'}")
+            
+            if debug_mode:
+                if key == keyboard.Key.enter:
+                    # Simulate button press
+                    print(f"Enter pressed: Captured image")
+                    captured_image, image_path = capture_webcam_image(cap, DEFAULT_DIMENSION)
+                    if captured_image is not None:
+                        generated_images.clear()
+                        generated_images.append(captured_image)
+                        threading.Thread(target=send_image_to_api, args=(image_path, generated_images)).start()
+                        current_image_index = 0
+                
+                elif key == keyboard.Key.left:
+                    total_steps = max(0, total_steps - 1)
+                    print(f"Steps: {total_steps}")
+                
+                elif key == keyboard.Key.right:
+                    total_steps = min(39, total_steps + 1)  # Max value would be 39 (2 images * 20 steps - 1)
+                    print(f"Steps: {total_steps}")
+
+        except AttributeError:
+            pass
+
+    # Start keyboard listener
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
 
     while True:
         # Read the webcam frame
@@ -108,8 +153,11 @@ def main_loop():
         
         if len(generated_images) > 1:
             # Calculate blend factor
-            next_image_index = current_image_index + 1
-            blended_image = blend_images(generated_images[current_image_index], generated_images[next_image_index], blend_factor)
+            if debug_mode:
+                current_image_index = total_steps // 20
+                blend_factor = (total_steps % 20) / 20
+                current_image_index %= len(generated_images) - 1
+            blended_image = blend_images(generated_images[current_image_index], generated_images[current_image_index + 1], blend_factor)
         elif len(generated_images) == 1:
             blended_image = generated_images[0]
         else:
@@ -119,30 +167,38 @@ def main_loop():
         split_screen = create_split_screen(webcam_frame, blended_image, WINDOW_WIDTH, WINDOW_HEIGHT)
         cv2.imshow(WINDOW_NAME, split_screen)
 
-        # Check for input from ESP32
-        if ser.in_waiting > 0:
-            value = ser.readline().decode('utf-8').strip()
-            print(f"Received value: {value}")
+        # Check for input from ESP32 if serial is available
+        if serial_available and ser.in_waiting > 0:
+            try:
+                value = ser.readline().decode('utf-8').strip()
+                print(f"Received value: {value}")
 
-            if value == "btn":
-                # Capture a new image
-                captured_image, image_path = capture_webcam_image(cap, DEFAULT_DIMENSION)
-                if captured_image is not None:
-                    generated_images.clear()
-                    generated_images.append(captured_image)
-                    threading.Thread(target=send_image_to_api, args=(image_path, generated_images)).start()
-                    current_image_index = 0
+                if value == "btn":
+                    captured_image, image_path = capture_webcam_image(cap, DEFAULT_DIMENSION)
+                    if captured_image is not None:
+                        generated_images.clear()
+                        generated_images.append(captured_image)
+                        threading.Thread(target=send_image_to_api, args=(image_path, generated_images)).start()
+                        current_image_index = 0
 
-            if value.isdigit() and len(generated_images) > 1:
-                total_steps = int(value)
-                current_image_index = total_steps // 20
-                blend_factor = (total_steps % 20) / 20
-                current_image_index %= len(generated_images) -1
+                if value.isdigit() and len(generated_images) > 1:
+                    total_steps = int(value)
+                    current_image_index = total_steps // 20
+                    blend_factor = (total_steps % 20) / 20
+                    current_image_index %= len(generated_images) -1
+            except serial.SerialException:
+                print("Serial connection lost")
+                serial_available = False
+                ser = None
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             print("Exiting...")
             break
 
+    # Cleanup
+    listener.stop()
+    if serial_available:
+        ser.close()
     cap.release()
     cv2.destroyAllWindows()
 
