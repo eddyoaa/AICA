@@ -5,6 +5,10 @@ import numpy as np
 import serial
 import threading
 from pynput import keyboard
+from PIL import Image
+import win32print
+import win32ui
+from io import BytesIO
 
 # Configuration
 WEBUI_SERVER_URL = 'http://127.0.0.1:7860'
@@ -93,6 +97,29 @@ def blend_images(image1, image2, blend_factor):
     """Blends two images using the given blend factor."""
     return cv2.addWeighted(image1, 1 - blend_factor, image2, blend_factor, 0)
 
+def print_image(image):
+    """Druckt ein OpenCV-Bild auf dem Standarddrucker."""
+    try:
+        # OpenCV Bild zu PIL Image konvertieren
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(image_rgb)
+        
+        # Standarddrucker ermitteln
+        printer_name = win32print.GetDefaultPrinter()
+        
+        # Druckauftrag starten
+        hprinter = win32print.OpenPrinter(printer_name)
+        print(f"Drucke auf: {printer_name}")
+        
+        # Hier können Sie die Druckeinstellungen anpassen
+        pil_image.save("temp_print.png")
+        win32print.StartDocPrinter(hprinter, 1, ("temp_print.png", None, "RAW"))
+        win32print.EndDocPrinter(hprinter)
+        win32print.ClosePrinter(hprinter)
+        
+    except Exception as e:
+        print(f"Druckfehler: {str(e)}")
+
 def main_loop():
     """Main loop to handle serial/keyboard input and process images."""
     global serial_available, ser
@@ -135,7 +162,17 @@ def main_loop():
                 elif key == keyboard.Key.right:
                     total_steps = min(39, total_steps + 1)  # Max value would be 39 (2 images * 20 steps - 1)
                     print(f"Steps: {total_steps}")
-
+                
+                elif hasattr(key, 'char') and key.char == 'p':
+                    if len(generated_images) > 0:
+                        current_image = blend_images(
+                            generated_images[current_image_index],
+                            generated_images[current_image_index + 1],
+                            blend_factor
+                        ) if len(generated_images) > 1 else generated_images[0]
+                        print_image(current_image)
+                        print("Druckauftrag gesendet")
+                
         except AttributeError:
             pass
 
