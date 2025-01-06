@@ -17,6 +17,34 @@ WINDOW_WIDTH = DEFAULT_DIMENSION * 2
 WINDOW_HEIGHT = DEFAULT_DIMENSION
 ENTER_TIMEOUT = 1.0  # 1-second timeout for Enter key
 
+# SD Config
+GEN_STEPS = 5
+DENOISING_STRENGTH = 0.3  # Balanced preservation and transformation
+CFG_SCALE = 8.5           # Lower for faster and more organic results
+SAMPLER = "Euler a"       # Fast and reliable sampler
+MODEL = "SSD-1B"      # Use a lightweight model for speed
+PROMPTS = [
+    "happy, smiling person",
+    "happy, smiling person",
+    "happy, smiling person in isolation",
+    "person in huge group of people",
+    "anonymous, silhouette-like person, no facial features, in huge group of people",
+    "anonymous, silhouette-like person, no facial features, in huge group of people",
+    "anonymous, silhouette-like person, no facial features, in huge group of people",
+    "anonymous, sad, silhouette-like person, no facial features, in huge group of people",
+    "anonymous, sad, silhouette-like person, no facial features, in huge group of people",
+    "anonymous, sad, silhouette-like person, no facial features, in huge group of people",
+    "no facial features, huge group of people, individuals not distinguishable",
+    "no facial features, huge group of people, individuals not distinguishable",
+    "no facial features, huge group of people, individuals not distinguishable",
+    "no facial features, huge group of people, individuals not distinguishable",
+    "no facial features, huge group of people, individuals not distinguishable"
+]
+PROMPT_ENHANCERS = ", dramatic shadows, busy background, foggy, moody, realistic"
+
+LOOP_STEPS = len(PROMPTS)
+
+
 # Global State Variables
 generated_images = []
 current_image_index = 0
@@ -53,31 +81,47 @@ def decode_base64_to_image(base64_data):
     return cv2.imdecode(np_array, cv2.IMREAD_COLOR)
 
 
-def send_image_to_api(image_path):
-    """Send image to the API and update the global image list."""
-    global generated_images, CURRENT_WEBCAM_CAPTURE
+def iterative_image_generation(image_path, generated_imgs : list):
+    """
+    Performs iterative image generation by sending successive API requests.
+    Each iteration uses the output of the previous one as the new input.
+    """
+    current_image_path = image_path
+    for i in range(LOOP_STEPS):
+        encoded_image = encode_file_to_base64(current_image_path)
+        # API Payload
+        payload = {
+            "prompt": PROMPTS[i] + PROMPT_ENHANCERS,
+            "negative_prompt": "flat, ugly, boring, low quality",
+            "init_images": [encoded_image],  # Base image for img2img
+            "denoising_strength": DENOISING_STRENGTH,
+            "cfg_scale": CFG_SCALE,
+            "sampler_index": SAMPLER,
+            "steps": GEN_STEPS,
+            "width": DEFAULT_DIMENSION,
+            "height": DEFAULT_DIMENSION,
+            "n_iter": 1,  # Number of times to run
+            "batch_size": 1,  # Process one image at a time for speed
+            "override_settings": {
+                "sd_model_checkpoint": MODEL,
+                "CLIP_stop_at_last_layers": 2  # Optimize text-to-image processing
+            },
+        }
+        response = requests.post(f'{WEBUI_SERVER_URL}/sdapi/v1/img2img', json=payload)
+        if response.status_code == 200:
+            images = response.json().get("images", [])
+            if not images:
+                print("No images received from API.")
+                break
+            
+            new_image = decode_base64_to_image(images[0])
+            generated_imgs.append(new_image)
 
-    encoded_image = encode_file_to_base64(image_path)
-    payload = {
-        "prompt": "single person in isolation, dark background",
-        "init_images": [encoded_image],
-        "denoising_strength": 0.2,
-        "n_iter": 1,
-        "width": DEFAULT_DIMENSION,
-        "height": DEFAULT_DIMENSION,
-        "batch_size": 1,
-        "override_settings": {"sd_model_checkpoint": "v2-1_768-ema-pruned"},
-        "script_name": "Loopback",
-        "script_args": [10, 0.2, "Linear", "None"]
-    }
-    response = requests.post(f'{WEBUI_SERVER_URL}/sdapi/v1/img2img', json=payload)
-    if response.status_code == 200:
-        images = response.json().get("images", [])[1:]  # Skip first overview image
-        if CURRENT_WEBCAM_CAPTURE is not None:
-            generated_images.append(CURRENT_WEBCAM_CAPTURE)  # Add webcam image as first entry
-        generated_images.extend(decode_base64_to_image(img) for img in images)
-    else:
-        print(f"API error: {response.status_code} - {response.text}")
+            current_image_path = "current_iteration.png"
+            cv2.imwrite(current_image_path, new_image)
+        else:
+            print(f"API error during iteration: {response.status_code} - {response.text}")
+            break
 
 
 def crop_to_square(image):
@@ -136,7 +180,8 @@ def handle_command(command):
             captured_image, image_path = capture_webcam_image()
             if captured_image is not None:
                 generated_images.clear()
-                threading.Thread(target=send_image_to_api, args=(image_path,)).start()
+                generated_images.append(captured_image)
+                threading.Thread(target=iterative_image_generation, args=(image_path, generated_images)).start()
                 current_image_index = 0
         else:
             print("Enter pressed too soon, ignoring duplicate.")
