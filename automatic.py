@@ -6,10 +6,29 @@ import serial
 import threading
 import keyboard
 import time
+import os
+from datetime import datetime
+
+
+from pythonosc.dispatcher import Dispatcher
+from pythonosc.osc_server import BlockingOSCUDPServer
+from pythonosc.udp_client import SimpleUDPClient
+import threading
+from PIL import Image
+import numpy as np
+import time
+from pythonosc import udp_client
+# AUDIO CONFIG
+# OSC Settings
+python_ip = "127.0.0.1"  # IP for Python's OSC server
+python_port = 57121      # Port for Python's OSC server
+sc_ip = "127.0.0.1"      # SuperCollider IP (localhost)
+sc_port = 57120          # SuperCollider OSC port
 
 # Configuration
 WEBUI_SERVER_URL = 'http://127.0.0.1:7860'
-COM_PORT = '/dev/tty.usbserial-2110'
+# COM_PORT = '/dev/tty.usbserial-2110' 
+COM_PORT = "/dev/cu.SLAB_USBtoUART"
 BAUD_RATE = 9600
 WINDOW_NAME = "Display"
 DEFAULT_DIMENSION = 512
@@ -18,32 +37,36 @@ WINDOW_HEIGHT = DEFAULT_DIMENSION
 ENTER_TIMEOUT = 1.0  # 1-second timeout for Enter key
 
 # SD Config
-GEN_STEPS = 5
-DENOISING_STRENGTH = 0.3  # Balanced preservation and transformation
-CFG_SCALE = 8.5           # Lower for faster and more organic results
-SAMPLER = "Euler a"       # Fast and reliable sampler
-MODEL = "SSD-1B"      # Use a lightweight model for speed
+# GEN_STEPS = 8
+DENOISING_STRENGTH = 0.35  
+CFG_SCALE = 8          
+SAMPLER = "Euler a"       
+MODEL = "SSD-1B"      
 PROMPTS = [
+    "happy person",
     "happy, smiling person",
     "happy, smiling person",
-    "happy, smiling person in isolation",
-    "person in huge group of people",
-    "anonymous, silhouette-like person, no facial features, in huge group of people",
-    "anonymous, silhouette-like person, no facial features, in huge group of people",
-    "anonymous, silhouette-like person, no facial features, in huge group of people",
-    "anonymous, sad, silhouette-like person, no facial features, in huge group of people",
-    "anonymous, sad, silhouette-like person, no facial features, in huge group of people",
-    "anonymous, sad, silhouette-like person, no facial features, in huge group of people",
-    "no facial features, huge group of people, individuals not distinguishable",
-    "no facial features, huge group of people, individuals not distinguishable",
-    "no facial features, huge group of people, individuals not distinguishable",
-    "no facial features, huge group of people, individuals not distinguishable",
-    "no facial features, huge group of people, individuals not distinguishable"
+    "happy, smiling person",
+    "person",
+    "person",
+    "person",
+    "unrecognizable, generic person, no facial features",
+    "unrecognizable, generic person, no facial features",
+    "unrecognizable, generic person, no facial features",
+    "unrecognizable, sad, silhouette-like person, no facial features",
+    "unrecognizable, sad, silhouette-like person, no facial features",
+    "unrecognizable, sad, silhouette-like person, no facial features",
+    "faceless, sad sillhouette-like person, no facial features, individuals not distinguishable",
+    "faceless, sad sillhouette-like person, no facial features, individuals not distinguishable",
+    "faceless, sad sillhouette-like person, no facial features, individuals not distinguishable",
+    "faceless, sad sillhouette-like person, no facial features, individuals not distinguishable",
+    "circle"
 ]
-PROMPT_ENHANCERS = ", dramatic shadows, busy background, foggy, moody, realistic"
+PROMPT_ENHANCERS = ", selfie, dystopian, faint, busy background with huge group of people, moody"
 
 LOOP_STEPS = len(PROMPTS)
 
+# ----- General  Setup -----
 
 # Global State Variables
 generated_images = []
@@ -52,6 +75,10 @@ blend_factor = 0
 total_steps = 0
 last_enter_time = 0  # Track last 'Enter' press time
 CURRENT_WEBCAM_CAPTURE = None  # Store current webcam image
+
+# threading Variables
+current_thread : threading.Thread = None
+stop_event = threading.Event()
 
 # Webcam Global Constant
 WEBCAM = cv2.VideoCapture(0)
@@ -66,6 +93,62 @@ except serial.SerialException:
     debug_mode = True  # No serial connection; debug mode on
     print("No serial connection available - Debug mode enabled")
 
+# ----- Audio Setup -----
+
+# Function triggered by SuperCollider's OSC message
+def evaluate_code(address, *args):
+    print(f"Received OSC message: {address} with arguments {args}")
+    image_path = 'captured_image.png'
+    process_and_send_image(image_path)
+    
+def process_and_send_image(image_path):
+    print("Processing image...")
+
+    # Load and process the image
+    image = Image.open(image_path).resize((100, 100))
+    image_data = np.array(image) / 255.0  # Normalize to 0-1 range
+    
+    print(image_data.shape)
+
+    # Separate color channels
+    red_channel = image_data[:, :, 0].flatten()
+    green_channel = image_data[:, :, 1].flatten()
+    blue_channel = image_data[:, :, 2].flatten()
+
+    # Send data via OSC
+    main_client.send_message("/image/red", red_channel.tolist())
+    main_client.send_message("/image/green", green_channel.tolist())
+    main_client.send_message("/image/blue", blue_channel.tolist())
+
+    print("Data sent to SuperCollider!")
+
+# Function to send a stop and reset message
+def stop_and_reset():
+    # Send a custom OSC message to the SuperCollider listener to stop all processes
+    stop_client.send_message("/evaluate/code", None)  # Trigger the block reset in SuperCollider
+    print("Sent stop and reset command to SuperCollider.")
+
+# AUDIO SETUP
+# Initialize OSC client for sending data to SuperCollider
+main_client = SimpleUDPClient(sc_ip, sc_port)
+stop_client = SimpleUDPClient(sc_ip, 57123)
+# Setup OSC client
+rotation_update_client = udp_client.SimpleUDPClient("127.0.0.1", 57122)  # Adjust IP and port as needed
+# Set up the dispatcher
+dispatcher = Dispatcher()
+dispatcher.map("/trigger/evaluate", evaluate_code)  # Map OSC message to function
+
+# Set up the server
+server = BlockingOSCUDPServer((python_ip, python_port), dispatcher)
+
+# Create a new thread for the server to run
+def server_thread():
+    server.serve_forever()
+
+server_thread_instance = threading.Thread(target=server_thread)
+server_thread_instance.start()
+
+print(f"Python OSC server running at {python_ip}:{python_port}. Waiting for SuperCollider trigger...")
 
 # ----- Utility Functions -----
 
@@ -80,49 +163,87 @@ def decode_base64_to_image(base64_data):
     np_array = np.frombuffer(image_bytes, np.uint8)
     return cv2.imdecode(np_array, cv2.IMREAD_COLOR)
 
+def iterative_image_generation(image_path, generated_imgs: list):
+    """
+    Stops the existing thread (if running) and starts a new instance of the iterative image generation function.
+    """
+    global stop_event, current_thread
 
-def iterative_image_generation(image_path, generated_imgs : list):
+    # Stop the current thread if it's running
+    if current_thread and current_thread.is_alive():
+        print("Stopping the currently running thread.")
+        stop_event.set()  # Signal the thread to stop
+        current_thread.join()  # Wait for it to finish
+        print("Thread stopped.")
+
+    # Reset Stop event
+    stop_event.clear()
+
+    # Create and start a new thread
+    new_thread = threading.Thread(
+        target=_iterative_image_generation,
+        args=(image_path, generated_imgs)
+    )
+    new_thread.start()
+
+    # Update thread manager with new thread and stop event
+    current_thread = new_thread
+    stop_event = stop_event
+
+    print("New thread started.")
+
+
+
+def _iterative_image_generation(image_path, generated_imgs : list):
     """
     Performs iterative image generation by sending successive API requests.
     Each iteration uses the output of the previous one as the new input.
     """
     current_image_path = image_path
     for i in range(LOOP_STEPS):
+        if stop_event.is_set():
+            return
         encoded_image = encode_file_to_base64(current_image_path)
         # API Payload
         payload = {
             "prompt": PROMPTS[i] + PROMPT_ENHANCERS,
-            "negative_prompt": "flat, ugly, boring, low quality",
+            "negative_prompt": "flat, ugly, boring, low quality, blurry",
             "init_images": [encoded_image],  # Base image for img2img
             "denoising_strength": DENOISING_STRENGTH,
             "cfg_scale": CFG_SCALE,
             "sampler_index": SAMPLER,
-            "steps": GEN_STEPS,
+            "steps": max(2, min(8, LOOP_STEPS - i)), # Reduce step size in every loop, ranging from 2 to 8
             "width": DEFAULT_DIMENSION,
             "height": DEFAULT_DIMENSION,
             "n_iter": 1,  # Number of times to run
             "batch_size": 1,  # Process one image at a time for speed
             "override_settings": {
                 "sd_model_checkpoint": MODEL,
-                "CLIP_stop_at_last_layers": 2  # Optimize text-to-image processing
+                "CLIP_stop_at_last_layers": 2
             },
         }
-        response = requests.post(f'{WEBUI_SERVER_URL}/sdapi/v1/img2img', json=payload)
-        if response.status_code == 200:
-            images = response.json().get("images", [])
-            if not images:
-                print("No images received from API.")
+        try:
+            response = requests.post(f'{WEBUI_SERVER_URL}/sdapi/v1/img2img', json=payload, timeout=10)  # Set timeout to 10 seconds
+            if response.status_code == 200:
+                images = response.json().get("images", [])
+                if not images:
+                    print("No images received from API.")
+                    break
+                if stop_event.is_set():
+                    return
+
+                new_image = decode_base64_to_image(images[0])
+                generated_imgs.append(new_image)
+
+                # Save images with a timestamp to avoid overwriting
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                current_image_path = os.path.join("imgs", f"iteration_{timestamp}_{i+1}.png")
+                cv2.imwrite(current_image_path, new_image)
+            else:
+                print(f"API error during iteration {i}: {response.status_code} - {response.text}")
                 break
-            
-            new_image = decode_base64_to_image(images[0])
-            generated_imgs.append(new_image)
-
-            current_image_path = "current_iteration.png"
-            cv2.imwrite(current_image_path, new_image)
-        else:
-            print(f"API error during iteration: {response.status_code} - {response.text}")
-            break
-
+        except requests.exceptions.Timeout:
+            print(f"Timeout occurred during iteration {i}. Debug: The request took longer than 10 seconds.")
 
 def crop_to_square(image):
     """Crop the center square from an image."""
@@ -144,13 +265,15 @@ def capture_webcam_image():
 
     square_image = crop_to_square(frame)
     resized_image = cv2.resize(square_image, (DEFAULT_DIMENSION, DEFAULT_DIMENSION))
-    image_path = 'captured_image.png'
-    cv2.imwrite(image_path, resized_image)
+    # Save images with a timestamp to avoid overwriting
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    current_image_path = os.path.join("imgs", f"iteration_{timestamp}_{0}.png")
+    cv2.imwrite(current_image_path, resized_image)
 
     # Update the global webcam image
     CURRENT_WEBCAM_CAPTURE = resized_image
 
-    return resized_image, image_path
+    return resized_image, current_image_path
 
 
 def blend_images(image1, image2, blend_factor):
@@ -179,10 +302,12 @@ def handle_command(command):
             print("Command: Capture Image")
             captured_image, image_path = capture_webcam_image()
             if captured_image is not None:
+                main_client.send_message("/evaluate/code", [])
                 generated_images.clear()
                 generated_images.append(captured_image)
-                threading.Thread(target=iterative_image_generation, args=(image_path, generated_images)).start()
                 current_image_index = 0
+                total_steps = 0
+                iterative_image_generation(image_path, generated_images)
         else:
             print("Enter pressed too soon, ignoring duplicate.")
 
@@ -191,18 +316,19 @@ def handle_command(command):
         print(f"Steps: {total_steps}")
 
     elif command == "right":
-        if len(generated_images) > 0:
+        if len(generated_images) > 1:
             n_images = len(generated_images) -1
             total_steps = min(n_images * 20 - 1, total_steps + 1)
         else:
             total_steps = 0
         print(f"Steps: {total_steps}")
 
-    elif command.isdigit():
-        total_steps = int(command)
-        current_image_index = total_steps // 20
-        print(f"Set steps to: {total_steps}")
-
+    # elif command.isdigit():
+    #     total_steps = int(command)
+    #     current_image_index = total_steps // 20
+    #     print(f"Set steps to: {total_steps}")
+    else:
+        print(f"unable to decode command {command}")
 
 # ----- Input Handlers -----
 
@@ -220,8 +346,12 @@ def handle_serial_input():
     """Handle serial input and delegate commands."""
     try:
         value = ser.readline().decode('utf-8').strip()
-        if value:
-            handle_command(value)
+        if value == "btn":
+            handle_command("enter")
+        elif value == "+":
+            handle_command("left")
+        elif value == "-":
+            handle_command("right")
     except serial.SerialException:
         print("Serial connection lost")
         return False
@@ -257,6 +387,7 @@ def main_loop():
 
         # Create split screen with blended image, if available
         if len(generated_images) > 1:
+            # image blending
             blend_factor = (total_steps % 20) / 19.0
             current_image_index = min(total_steps // 20, len(generated_images) - 2)
             blended_image = blend_images(
@@ -264,6 +395,9 @@ def main_loop():
                 generated_images[current_image_index + 1],
                 blend_factor
             )
+            # audio blending
+            if rotation_update_client:
+                rotation_update_client.send_message("/knob", [current_image_index, blend_factor])
         elif CURRENT_WEBCAM_CAPTURE is not None:
             blended_image = CURRENT_WEBCAM_CAPTURE
         else:
@@ -275,11 +409,18 @@ def main_loop():
         # Check for window close
         if cv2.waitKey(1) & 0xFF == ord('q'):
             print("Exiting...")
+            stop_event.set()
             break
 
     if ser:
         ser.close()
     WEBCAM.release()
+    # AUDIO shutdown
+    stop_and_reset()
+    # Shutdown server gracefully after the task is done
+    server.shutdown()
+    server_thread_instance.join()
+    print("Server has been stopped.")
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
