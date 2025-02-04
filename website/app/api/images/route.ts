@@ -7,10 +7,10 @@ export async function GET() {
       content_type: "aica",
     });
 
-    const images = response.items.map((item: AicaEntry) => ({
+    const images = response.items.map((item) => ({
       id: item.sys.id,
       image: {
-        url: `https:${item.fields.image.fields.file.url}`,
+        url: `https:${(item.fields as any).image.fields.file.url}`,
       },
     }));
 

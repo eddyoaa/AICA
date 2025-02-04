@@ -40,7 +40,7 @@ export default function Home() {
       });
   }, []);
 
-  const handleDownload = async (image: AicaImage) => {
+  const handleDownload = async (image: Image) => {
     try {
       const response = await fetch(image.image.url);
       const blob = await response.blob();
