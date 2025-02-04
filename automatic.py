@@ -53,7 +53,7 @@ def send_image_to_api(image_path, images_placeholder):
         "batch_size": 1,
         "override_settings": {"sd_model_checkpoint": "v2-1_768-ema-pruned"},
         "script_name": "Loopback",
-        "script_args": [10, 0.2, "Linear", "None"]
+        "script_args": [1, 0.2, "Linear", "None"]
     }
     response = requests.post(f'{WEBUI_SERVER_URL}/sdapi/v1/img2img', json=payload)
     if response.status_code == 200:
