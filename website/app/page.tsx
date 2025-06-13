@@ -123,7 +123,7 @@ export default function Home() {
               Imprint
             </Link>
             <Link
-              href="/privacy"
+              href="https://www.eduard-krasnov.de/datenschutz"
               className="hover:text-white transition-colors"
             >
               Privacy Policy
