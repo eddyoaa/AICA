@@ -117,7 +117,7 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-8 py-6">
           <div className="flex justify-center space-x-6 text-sm text-gray-400">
             <Link
-              href="/imprint"
+              href="https://www.eduard-krasnov.de/impressum"
               className="hover:text-white transition-colors"
             >
               Imprint
